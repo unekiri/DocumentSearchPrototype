@@ -1,0 +1,98 @@
+@page "/"
+@rendermode InteractiveServer
+
+@using Azure.Storage.Blobs
+@using Azure.Storage.Blobs.Models
+@using System.IO
+@inject BlobServiceClient BlobServiceClient
+@inject IConfiguration Configuration
+
+<PageTitle>Document Import</PageTitle>
+
+<h1>Document Import</h1>
+<p>登録する金入設計書を選択してください。</p>
+
+<div class="mb-3">
+    <InputFile OnChange="HandleFileSelected" accept=".pdf" class="form-control" />
+</div>
+
+@if (selectedFile != null)
+{
+    <div class="my-3">        
+        <button class="btn btn-primary" @onclick="UploadFile" disabled="@isLoading">
+            @if (isLoading)
+            {
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                <span>Uploading...</span>
+            }
+            else
+            {
+                <span>登録</span>
+            }
+        </button>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="mt-3 alert @(isError ? "alert-danger" : "alert-success")">
+        @statusMessage
+    </div>
+}
+
+
+@code {
+    private IBrowserFile? selectedFile;
+    private string? statusMessage;
+    private bool isLoading = false;
+    private bool isError = false;
+    private long maxFileSize = 1024 * 1024 * 50; // 50 MB
+
+    private void HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        selectedFile = e.File;
+        statusMessage = null;
+        isError = false;
+    }
+
+    private async Task UploadFile()
+    {
+        if (selectedFile == null)
+        {
+            return;
+        }
+
+        isLoading = true;
+        isError = false;
+        statusMessage = "Uploading...";
+
+        try
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            if (string.IsNullOrEmpty(containerName))
+            {
+                throw new InvalidOperationException("Container name is not configured in appsettings.json.");
+            }
+
+            var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+            await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
+
+            var blobClient = containerClient.GetBlobClient(selectedFile.Name);
+
+            await using var stream = selectedFile.OpenReadStream(maxFileSize);
+            await blobClient.UploadAsync(stream, new BlobHttpHeaders { ContentType = "application/pdf" }, conditions: null);
+
+            statusMessage = $"File '{selectedFile.Name}' uploaded successfully!";
+            selectedFile = null;
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error uploading file: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+}

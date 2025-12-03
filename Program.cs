@@ -1,3 +1,4 @@
+using Azure.Storage.Blobs;
 using DocumentSearchPrototype.Components;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -5,6 +6,9 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+// Add Azure Blob Service Client
+builder.Services.AddSingleton(x => new BlobServiceClient(builder.Configuration.GetValue<string>("AzureStorage:ConnectionString")));
 
 var app = builder.Build();
 
