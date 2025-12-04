@@ -75,7 +75,6 @@
             }
 
             var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
-            await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
 
             var blobClient = containerClient.GetBlobClient(selectedFile.Name);
 
@@ -84,6 +83,12 @@
 
             statusMessage = $"File '{selectedFile.Name}' uploaded successfully!";
             selectedFile = null;
+        }
+        catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "ContainerNotFound")
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            statusMessage = $"Error: The container '{containerName}' was not found. Please check your configuration.";
+            isError = true;
         }
         catch (Exception ex)
         {
