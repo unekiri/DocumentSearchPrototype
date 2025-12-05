@@ -10,6 +10,13 @@ builder.Services.AddRazorComponents()
 // Add Azure Blob Service Client
 builder.Services.AddSingleton(x => new BlobServiceClient(builder.Configuration.GetValue<string>("AzureStorage:ConnectionString")));
 
+// Add HttpClient for Azure AI Search
+builder.Services.AddHttpClient("AzureSearchClient", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["AzureSearch:Endpoint"] ?? throw new InvalidOperationException("Azure Search Endpoint is not configured."));
+    client.DefaultRequestHeaders.Add("api-key", builder.Configuration["AzureSearch:ApiKey"] ?? throw new InvalidOperationException("Azure Search ApiKey is not configured."));
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

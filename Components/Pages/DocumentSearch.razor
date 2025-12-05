@@ -1,0 +1,189 @@
+@page "/document-search"
+@rendermode InteractiveServer
+
+@using System.Text
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using Azure.Storage.Blobs
+@using Azure.Storage.Sas
+
+@inject IHttpClientFactory HttpClientFactory
+@inject IConfiguration Configuration
+@inject IJSRuntime JSRuntime
+@inject BlobServiceClient BlobServiceClient
+
+<PageTitle>Document Search</PageTitle>
+
+<h1>Document Search</h1>
+
+<p>検索ワードを入力してください。</p>
+
+<div class="input-group mb-3">
+    <input type="text" class="form-control" @bind="searchTerm" @onkeyup="HandleKeyUp" />
+    <button class="btn btn-primary" @onclick="Search" disabled="@isLoading">
+        @if (isLoading)
+        {
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <span>Searching...</span>
+        }
+        else
+        {
+            <span class="bi bi-search"></span>
+            <span>Search</span>
+        }
+    </button>
+</div>
+
+@if (searchResult != null)
+{
+    <div class="card" @onclick="() => ViewDocument(searchResult.FileName)" style="cursor: pointer;" title="Click to view document">
+        <div class="card-header">
+            Search Result (Highest Score)
+        </div>
+        <div class="card-body">
+            <h5 class="card-title">@searchResult.FileName</h5>
+            <p class="card-text">
+                <strong>Page Number:</strong> @searchResult.PageNumber <br />
+                <strong>Score:</strong> <span class="badge bg-success">@searchResult.Score</span>
+            </p>
+        </div>
+    </div>
+}
+else if(isLoading)
+{
+    <p><em>Searching...</em></p>
+}
+else if(searchAttempted && searchResult == null)
+{
+    <div class="alert alert-warning" role="alert">
+        No results found for "@searchedTerm".
+    </div>
+}
+
+
+@code {
+    private string? searchTerm;
+    private string? searchedTerm;
+    private bool isLoading = false;
+    private bool searchAttempted = false;
+    private SearchResult? searchResult;
+
+    private async Task ViewDocument(string fileName)
+    {
+        try
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+            var blobClient = containerClient.GetBlobClient(fileName);
+
+            if (await blobClient.ExistsAsync())
+            {
+                var sasBuilder = new BlobSasBuilder
+                {
+                    BlobContainerName = containerName,
+                    BlobName = fileName,
+                    Resource = "b", // "b" for blob
+                    ExpiresOn = DateTimeOffset.UtcNow.AddMinutes(15)
+                };
+
+                sasBuilder.SetPermissions(BlobSasPermissions.Read);
+
+                Uri sasUri = blobClient.GenerateSasUri(sasBuilder);
+                await JSRuntime.InvokeVoidAsync("open", sasUri.ToString(), "_blank");
+            }
+            else
+            {
+                await JSRuntime.InvokeVoidAsync("alert", $"File '{fileName}' not found in storage.");
+            }
+        }
+        catch (Exception ex)
+        {
+            await JSRuntime.InvokeVoidAsync("alert", $"Error generating file URL: {ex.Message}");
+        }
+    }
+
+    private async Task Search()
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return;
+        }
+
+        isLoading = true;
+        searchAttempted = true;
+        searchedTerm = searchTerm;
+        searchResult = null;
+
+        var httpClient = HttpClientFactory.CreateClient("AzureSearchClient");
+
+        var requestBody = new
+        {
+            search = searchTerm,
+            count = true
+        };
+
+        var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+
+        try
+        {
+            var indexName = Configuration["AzureSearch:IndexName"];
+            if (string.IsNullOrEmpty(indexName))
+            {
+                throw new InvalidOperationException("Azure Search IndexName is not configured.");
+            }
+            
+            var requestUrl = $"indexes/{indexName}/docs/search?api-version=2024-05-01-preview";
+            var response = await httpClient.PostAsync(requestUrl, content);
+            response.EnsureSuccessStatusCode();
+
+            var responseBody = await response.Content.ReadFromJsonAsync<SearchApiResponse>();
+            
+            searchResult = responseBody?.Value?
+                .OrderByDescending(r => r.Score)
+                .Select(r => new SearchResult(r.FileName, r.PageNumber, r.Score))
+                .FirstOrDefault();
+        }
+        catch (Exception ex)
+        {
+            // Handle error appropriately
+            Console.WriteLine(ex.Message);
+            searchResult = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+    
+    private async Task HandleKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await Search();
+        }
+    }
+
+    // C# record types to deserialize the JSON response
+    public record SearchResult(string FileName, int PageNumber, double Score);
+
+    public class SearchApiResponse
+    {
+        [JsonPropertyName("@odata.count")]
+        public int? Count { get; set; }
+
+        [JsonPropertyName("value")]
+        public List<ApiResultValue>? Value { get; set; }
+    }
+
+    public class ApiResultValue
+    {
+        [JsonPropertyName("@search.score")]
+        public double Score { get; set; }
+
+        [JsonPropertyName("metadata_storage_name")]
+        public string FileName { get; set; } = string.Empty;
+
+        [JsonPropertyName("pageNumber")]
+        public int PageNumber { get; set; }
+    }
+}
