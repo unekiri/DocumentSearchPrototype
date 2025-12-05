@@ -19,7 +19,7 @@
 <p>検索ワードを入力してください。</p>
 
 <div class="input-group mb-3">
-    <input type="text" class="form-control" @bind="searchTerm" @onkeyup="HandleKeyUp" />
+    <input type="text" class="form-control" @bind="searchTerm" @onkeyup="HandleKeyUp" placeholder="e.g., 'construction plan'" />
     <button class="btn btn-primary" @onclick="Search" disabled="@isLoading">
         @if (isLoading)
         {
@@ -34,26 +34,29 @@
     </button>
 </div>
 
-@if (searchResult != null)
+@if (searchResults != null && searchResults.Any())
 {
-    <div class="card" @onclick="() => ViewDocument(searchResult.FileName)" style="cursor: pointer;" title="Click to view document">
-        <div class="card-header">
-            Search Result (Highest Score)
-        </div>
-        <div class="card-body">
-            <h5 class="card-title">@searchResult.FileName</h5>
-            <p class="card-text">
-                <strong>Page Number:</strong> @searchResult.PageNumber <br />
-                <strong>Score:</strong> <span class="badge bg-success">@searchResult.Score</span>
-            </p>
-        </div>
+    <h4>Search Results</h4>
+    <div class="list-group">
+        @foreach (var result in searchResults)
+        {
+            <div class="list-group-item list-group-item-action" @onclick="() => ViewDocument(result.FileName)" style="cursor: pointer;" title="Click to view document">
+                <div class="d-flex w-100 justify-content-between">
+                    <h5 class="mb-1">@result.FileName</h5>
+                    <span class="badge bg-success rounded-pill">@result.Score.ToString("F2")</span>
+                </div>
+                <p class="mb-1">
+                    Most relevant match found on page <strong>@result.PageNumber</strong>.
+                </p>
+            </div>
+        }
     </div>
 }
-else if(isLoading)
+else if (isLoading)
 {
     <p><em>Searching...</em></p>
 }
-else if(searchAttempted && searchResult == null)
+else if (searchAttempted && (searchResults == null || !searchResults.Any()))
 {
     <div class="alert alert-warning" role="alert">
         No results found for "@searchedTerm".
@@ -66,7 +69,7 @@ else if(searchAttempted && searchResult == null)
     private string? searchedTerm;
     private bool isLoading = false;
     private bool searchAttempted = false;
-    private SearchResult? searchResult;
+    private List<SearchResult>? searchResults;
 
     private async Task ViewDocument(string fileName)
     {
@@ -112,7 +115,7 @@ else if(searchAttempted && searchResult == null)
         isLoading = true;
         searchAttempted = true;
         searchedTerm = searchTerm;
-        searchResult = null;
+        searchResults = null;
 
         var httpClient = HttpClientFactory.CreateClient("AzureSearchClient");
 
@@ -131,30 +134,31 @@ else if(searchAttempted && searchResult == null)
             {
                 throw new InvalidOperationException("Azure Search IndexName is not configured.");
             }
-            
+
             var requestUrl = $"indexes/{indexName}/docs/search?api-version=2024-05-01-preview";
             var response = await httpClient.PostAsync(requestUrl, content);
             response.EnsureSuccessStatusCode();
 
             var responseBody = await response.Content.ReadFromJsonAsync<SearchApiResponse>();
-            
-            searchResult = responseBody?.Value?
-                .OrderByDescending(r => r.Score)
+
+            searchResults = responseBody?.Value?
+                .GroupBy(r => r.FileName)
+                .Select(g => g.OrderByDescending(r => r.Score).First())
                 .Select(r => new SearchResult(r.FileName, r.PageNumber, r.Score))
-                .FirstOrDefault();
+                .ToList();
         }
         catch (Exception ex)
         {
             // Handle error appropriately
             Console.WriteLine(ex.Message);
-            searchResult = null;
+            searchResults = null;
         }
         finally
         {
             isLoading = false;
         }
     }
-    
+
     private async Task HandleKeyUp(KeyboardEventArgs e)
     {
         if (e.Key == "Enter")
