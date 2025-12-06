@@ -19,7 +19,7 @@
 <p>検索ワードを入力してください。</p>
 
 <div class="input-group mb-3">
-    <input type="text" class="form-control" @bind="searchTerm" @onkeyup="HandleKeyUp" placeholder="e.g., 'construction plan'" />
+    <input type="text" class="form-control" @bind="searchTerm" @onkeyup="HandleKeyUp"/>
     <button class="btn btn-primary" @onclick="Search" disabled="@isLoading">
         @if (isLoading)
         {
