@@ -122,7 +122,8 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
         var requestBody = new
         {
             search = searchTerm,
-            count = true
+            count = true,
+            searchMode = "any"
         };
 
         var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
