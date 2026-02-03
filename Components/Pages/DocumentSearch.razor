@@ -12,9 +12,9 @@
 @inject IJSRuntime JSRuntime
 @inject BlobServiceClient BlobServiceClient
 
-<PageTitle>Document Search</PageTitle>
+<PageTitle>金入設計書の検索</PageTitle>
 
-<h1>Document Search</h1>
+<h1>金入設計書の検索</h1>
 
 <p>検索ワードを入力してください。</p>
 
@@ -36,7 +36,7 @@
 
 @if (searchResults != null && searchResults.Any())
 {
-    <h4>Search Results</h4>
+    <h4>検索結果</h4>
     <div class="list-group">
         @foreach (var result in searchResults)
         {
