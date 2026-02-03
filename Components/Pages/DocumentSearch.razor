@@ -11,6 +11,7 @@
 @inject IConfiguration Configuration
 @inject IJSRuntime JSRuntime
 @inject BlobServiceClient BlobServiceClient
+@inject ILogger<DocumentSearch> Logger
 
 <PageTitle>金入設計書の検索</PageTitle>
 
@@ -76,6 +77,13 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
         try
         {
             var containerName = Configuration["AzureStorage:ContainerName"];
+            if (string.IsNullOrWhiteSpace(containerName))
+            {
+                Logger.LogError("AzureStorage:ContainerName is not configured.");
+                await JSRuntime.InvokeVoidAsync("alert", "Storage container is not configured.");
+                return;
+            }
+
             var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
             var blobClient = containerClient.GetBlobClient(fileName);
 
@@ -92,15 +100,18 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
                 sasBuilder.SetPermissions(BlobSasPermissions.Read);
 
                 Uri sasUri = blobClient.GenerateSasUri(sasBuilder);
+                Logger.LogInformation("Generated SAS URL for blob {BlobName} in container {ContainerName}.", fileName, containerName);
                 await JSRuntime.InvokeVoidAsync("open", sasUri.ToString(), "_blank");
             }
             else
             {
+                Logger.LogWarning("Blob not found. Container={ContainerName}, BlobName={BlobName}", containerName, fileName);
                 await JSRuntime.InvokeVoidAsync("alert", $"File '{fileName}' not found in storage.");
             }
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to generate SAS URL. BlobName={BlobName}", fileName);
             await JSRuntime.InvokeVoidAsync("alert", $"Error generating file URL: {ex.Message}");
         }
     }
@@ -118,6 +129,8 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
         searchResults = null;
 
         var httpClient = HttpClientFactory.CreateClient("AzureSearchClient");
+        Logger.LogInformation("Search requested. TermLength={TermLength}", searchTerm.Length);
+        Logger.LogDebug("Search term={SearchTerm}", searchTerm);
 
         var requestBody = new
         {
@@ -133,12 +146,25 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
             var indexName = Configuration["AzureSearch:IndexName"];
             if (string.IsNullOrEmpty(indexName))
             {
+                Logger.LogError("AzureSearch:IndexName is not configured.");
                 throw new InvalidOperationException("Azure Search IndexName is not configured.");
             }
 
             var requestUrl = $"indexes/{indexName}/docs/search?api-version=2024-05-01-preview";
             var response = await httpClient.PostAsync(requestUrl, content);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                var truncated = errorBody.Length > 2048 ? errorBody[..2048] : errorBody;
+                Logger.LogWarning(
+                    "Azure Search request failed. StatusCode={StatusCode}, Reason={ReasonPhrase}, Url={Url}, Body={Body}",
+                    (int)response.StatusCode,
+                    response.ReasonPhrase,
+                    requestUrl,
+                    truncated);
+                searchResults = null;
+                return;
+            }
 
             var responseBody = await response.Content.ReadFromJsonAsync<SearchApiResponse>();
 
@@ -150,8 +176,7 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
         }
         catch (Exception ex)
         {
-            // Handle error appropriately
-            Console.WriteLine(ex.Message);
+            Logger.LogError(ex, "Search failed. TermLength={TermLength}", searchTerm.Length);
             searchResults = null;
         }
         finally
