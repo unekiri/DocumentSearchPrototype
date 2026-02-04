@@ -44,10 +44,12 @@
             <div class="list-group-item list-group-item-action" @onclick="() => ViewDocument(result.FileName)" style="cursor: pointer;" title="Click to view document">
                 <div class="d-flex w-100 justify-content-between">
                     <h5 class="mb-1">@result.FileName</h5>
-                    <span class="badge bg-success rounded-pill">@result.Score.ToString("F2")</span>
                 </div>
                 <p class="mb-1">
-                    Most relevant match found on page <strong>@result.PageNumber</strong>.
+                    最も関連性の高いページ <strong>@result.TopPageNumber</strong>.
+                </p>
+                <p class="mb-1">
+                    関連性のあるページ @string.Join(", ", result.PageNumbers)
                 </p>
             </div>
         }
@@ -170,8 +172,13 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
 
             searchResults = responseBody?.Value?
                 .GroupBy(r => r.FileName)
-                .Select(g => g.OrderByDescending(r => r.Score).First())
-                .Select(r => new SearchResult(r.FileName, r.PageNumber, r.Score))
+                .Select(g =>
+                {
+                    var top = g.OrderByDescending(r => r.Score).First();
+                    var pages = g.Select(r => r.PageNumber).Distinct().OrderBy(p => p).ToList();
+                    return new SearchResult(g.Key, top.PageNumber, top.Score, pages);
+                })
+                .OrderByDescending(r => r.TopScore)
                 .ToList();
         }
         catch (Exception ex)
@@ -194,7 +201,7 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
     }
 
     // C# record types to deserialize the JSON response
-    public record SearchResult(string FileName, int PageNumber, double Score);
+    public record SearchResult(string FileName, int TopPageNumber, double TopScore, List<int> PageNumbers);
 
     public class SearchApiResponse
     {
