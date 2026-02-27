@@ -13,12 +13,68 @@
 <p>登録する金入設計書を選択してください。</p>
 
 <div class="mb-3">
+    <label class="form-label">PDFファイル</label>
     <InputFile OnChange="HandleFileSelected" accept=".pdf" class="form-control" />
 </div>
 
 @if (selectedFile != null)
 {
-    <div class="my-3">        
+    <h3 class="mt-4 mb-3">フォルダ情報</h3>
+
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label class="form-label">都道府県 <span class="text-danger">*</span></label>
+            <select @bind="prefecture" class="form-select" required>
+                <option value="">選択してください</option>
+                @foreach (var p in prefectures)
+                {
+                    <option value="@p">@p</option>
+                }
+            </select>
+        </div>
+
+        <div class="col-md-6 mb-3">
+            <label class="form-label">市区町村 <span class="text-danger">*</span></label>
+            <select @bind="municipality" class="form-select" required>
+                <option value="">選択してください</option>
+                @foreach (var m in municipalities)
+                {
+                    <option value="@m">@m</option>
+                }
+            </select>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label class="form-label">年度 <span class="text-danger">*</span></label>
+            <select @bind="fiscalYear" class="form-select" required>
+                <option value="">選択してください</option>
+                @foreach (var year in fiscalYears)
+                {
+                    <option value="@year">@year</option>
+                }
+            </select>
+        </div>
+
+        <div class="col-md-6 mb-3">
+            <label class="form-label">工事分類 <span class="text-danger">*</span></label>
+            <input @bind="constructionType"
+                   @oninput="OnConstructionTypeInput"
+                   list="construction-type-list"
+                   class="form-control"
+                   placeholder="入力してください（既存の分類から選択可能）"
+                   required />
+            <datalist id="construction-type-list">
+                @foreach (var type in existingConstructionTypes)
+                {
+                    <option value="@type" />
+                }
+            </datalist>
+        </div>
+    </div>
+
+    <div class="my-3">
         <button class="btn btn-primary" @onclick="UploadFile" disabled="@isLoading">
             @if (isLoading)
             {
@@ -48,11 +104,90 @@
     private bool isError = false;
     private long maxFileSize = 1024 * 1024 * 50; // 50 MB
 
+    // フォルダ情報
+    private string prefecture = "";
+    private string municipality = "";
+    private string fiscalYear = "";
+    private string constructionType = "";
+
+    // 固定選択肢
+    private List<string> prefectures = new()
+    {
+        "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+        "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+        "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
+        "岐阜県", "静岡県", "愛知県", "三重県",
+        "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県",
+        "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+        "徳島県", "香川県", "愛媛県", "高知県",
+        "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"
+    };
+
+    private List<string> municipalities = new()
+    {
+        "札幌市", "仙台市", "さいたま市", "千葉市", "横浜市", "川崎市", "相模原市",
+        "新潟市", "静岡市", "浜松市", "名古屋市", "京都市", "大阪市", "堺市",
+        "神戸市", "岡山市", "広島市", "北九州市", "福岡市", "熊本市",
+        "港区", "新宿区", "渋谷区", "品川区", "目黒区", "世田谷区", "中央区"
+    };
+
+    private List<string> fiscalYears = new();
+    private List<string> existingConstructionTypes = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 年度リストを生成（過去5年から未来2年まで）
+        var currentYear = DateTime.Now.Year;
+        for (int i = currentYear - 5; i <= currentYear + 2; i++)
+        {
+            fiscalYears.Add(i.ToString());
+        }
+
+        // 既存の工事分類を取得
+        await LoadExistingConstructionTypes();
+    }
+
+    private async Task LoadExistingConstructionTypes()
+    {
+        try
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            if (string.IsNullOrEmpty(containerName))
+            {
+                return;
+            }
+
+            var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+
+            var constructionTypeSet = new HashSet<string>();
+
+            await foreach (var blobItem in containerClient.GetBlobsAsync(BlobTraits.Metadata))
+            {
+                if (blobItem.Metadata.TryGetValue("ConstructionType", out var type) && !string.IsNullOrWhiteSpace(type))
+                {
+                    constructionTypeSet.Add(type);
+                }
+            }
+
+            existingConstructionTypes = constructionTypeSet.OrderBy(x => x).ToList();
+        }
+        catch (Exception)
+        {
+            // エラーが発生しても継続（既存の分類が取得できないだけ）
+            existingConstructionTypes = new List<string>();
+        }
+    }
+
     private void HandleFileSelected(InputFileChangeEventArgs e)
     {
         selectedFile = e.File;
         statusMessage = null;
         isError = false;
+    }
+
+    private void OnConstructionTypeInput(ChangeEventArgs e)
+    {
+        constructionType = e.Value?.ToString() ?? "";
     }
 
     private async Task UploadFile()
@@ -61,6 +196,21 @@
         {
             return;
         }
+
+        // バリデーション
+        if (string.IsNullOrWhiteSpace(prefecture) ||
+            string.IsNullOrWhiteSpace(municipality) ||
+            string.IsNullOrWhiteSpace(fiscalYear) ||
+            string.IsNullOrWhiteSpace(constructionType))
+        {
+            statusMessage = "全ての項目を入力してください。";
+            isError = true;
+            return;
+        }
+
+        // 工事分類の正規化（前後の空白を削除、連続する空白を1つに）
+        var normalizedConstructionType = System.Text.RegularExpressions.Regex.Replace(
+            constructionType.Trim(), @"\s+", " ");
 
         isLoading = true;
         isError = false;
@@ -78,11 +228,32 @@
 
             var blobClient = containerClient.GetBlobClient(selectedFile.Name);
 
+            // メタデータを設定
+            var metadata = new Dictionary<string, string>
+            {
+                { "Prefecture", prefecture },
+                { "Municipality", municipality },
+                { "FiscalYear", fiscalYear },
+                { "ConstructionType", normalizedConstructionType }
+            };
+
             await using var stream = selectedFile.OpenReadStream(maxFileSize);
             await blobClient.UploadAsync(stream, new BlobHttpHeaders { ContentType = "application/pdf" }, conditions: null);
 
+            // メタデータを設定
+            await blobClient.SetMetadataAsync(metadata);
+
             statusMessage = $"File '{selectedFile.Name}' uploaded successfully!";
             selectedFile = null;
+
+            // フォーム入力をリセット
+            prefecture = "";
+            municipality = "";
+            fiscalYear = "";
+            constructionType = "";
+
+            // 工事分類リストを再読み込み
+            await LoadExistingConstructionTypes();
         }
         catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "ContainerNotFound")
         {

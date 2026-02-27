@@ -1,0 +1,386 @@
+@page "/document-browser"
+@rendermode InteractiveServer
+
+@using Azure.Storage.Blobs
+@using Azure.Storage.Blobs.Models
+@using Azure.Storage.Sas
+@inject BlobServiceClient BlobServiceClient
+@inject IConfiguration Configuration
+@inject IJSRuntime JSRuntime
+@inject ILogger<DocumentBrowser> Logger
+
+<PageTitle>フォルダブラウザ</PageTitle>
+
+<h1>フォルダブラウザ</h1>
+
+@if (isLoading)
+{
+    <div class="d-flex justify-content-center my-5">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+}
+else if (folderStructure == null || !folderStructure.Any())
+{
+    <div class="alert alert-info" role="alert">
+        フォルダに登録されているドキュメントがありません。
+    </div>
+}
+else
+{
+    <div class="row">
+        <div class="col-md-4">
+            <h4>フォルダ一覧</h4>
+            <div class="list-group">
+                @foreach (var prefecture in folderStructure)
+                {
+                    <div class="mb-2">
+                        <button class="btn btn-link text-start w-100" @onclick="() => TogglePrefecture(prefecture.Key)">
+                            <i class="bi @(expandedPrefectures.Contains(prefecture.Key) ? "bi-folder-open" : "bi-folder")"></i>
+                            @prefecture.Key (@prefecture.Value.TotalDocuments)
+                        </button>
+
+                        @if (expandedPrefectures.Contains(prefecture.Key))
+                        {
+                            <div class="ms-3">
+                                @foreach (var municipality in prefecture.Value.Municipalities)
+                                {
+                                    <div class="mb-2">
+                                        <button class="btn btn-link text-start w-100" @onclick="() => ToggleMunicipality(prefecture.Key, municipality.Key)">
+                                            <i class="bi @(IsExpanded(prefecture.Key, municipality.Key) ? "bi-folder-open" : "bi-folder")"></i>
+                                            @municipality.Key (@municipality.Value.TotalDocuments)
+                                        </button>
+
+                                        @if (IsExpanded(prefecture.Key, municipality.Key))
+                                        {
+                                            <div class="ms-3">
+                                                @foreach (var year in municipality.Value.Years)
+                                                {
+                                                    <div class="mb-2">
+                                                        <button class="btn btn-link text-start w-100" @onclick="() => ToggleYear(prefecture.Key, municipality.Key, year.Key)">
+                                                            <i class="bi @(IsExpanded(prefecture.Key, municipality.Key, year.Key) ? "bi-folder-open" : "bi-folder")"></i>
+                                                            @($"{year.Key}年度") (@year.Value.TotalDocuments)
+                                                        </button>
+
+                                                        @if (IsExpanded(prefecture.Key, municipality.Key, year.Key))
+                                                        {
+                                                            <div class="ms-3">
+                                                                @foreach (var constructionType in year.Value.ConstructionTypes)
+                                                                {
+                                                                    <button class="btn btn-link text-start w-100"
+                                                                            @onclick="() => SelectFolder(prefecture.Key, municipality.Key, year.Key, constructionType.Key)"
+                                                                            style="@(IsSelected(prefecture.Key, municipality.Key, year.Key, constructionType.Key) ? "background-color: #e7f3ff;" : "")">
+                                                                        <i class="bi bi-folder-fill"></i>
+                                                                        @constructionType.Key (@constructionType.Value.Count)
+                                                                    </button>
+                                                                }
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="col-md-8">
+            @if (selectedDocuments != null && selectedDocuments.Any())
+            {
+                <h4>ドキュメント一覧</h4>
+                <p class="text-muted">
+                    @selectedPrefecture > @selectedMunicipality > @($"{selectedYear}年度") > @selectedConstructionType
+                </p>
+                <div class="list-group">
+                    @foreach (var doc in selectedDocuments)
+                    {
+                        <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                             @onclick="() => ViewDocument(doc.Name)"
+                             style="cursor: pointer;">
+                            <div>
+                                <i class="bi bi-file-pdf text-danger"></i>
+                                <strong>@doc.Name</strong>
+                                <br />
+                                <small class="text-muted">
+                                    アップロード日時: @(doc.CreatedOn?.ToLocalTime().ToString("yyyy/MM/dd HH:mm") ?? "不明")
+                                </small>
+                            </div>
+                            <span class="badge bg-secondary">@FormatFileSize(doc.Size)</span>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="alert alert-secondary" role="alert">
+                    左側からフォルダを選択してください。
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private bool isLoading = true;
+    private Dictionary<string, PrefectureFolder>? folderStructure;
+    private HashSet<string> expandedPrefectures = new();
+    private HashSet<string> expandedItems = new();
+    private List<DocumentItem>? selectedDocuments;
+
+    private string? selectedPrefecture;
+    private string? selectedMunicipality;
+    private string? selectedYear;
+    private string? selectedConstructionType;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFolderStructure();
+    }
+
+    private async Task LoadFolderStructure()
+    {
+        isLoading = true;
+
+        try
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            if (string.IsNullOrEmpty(containerName))
+            {
+                Logger.LogError("AzureStorage:ContainerName is not configured.");
+                return;
+            }
+
+            var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+
+            var tempStructure = new Dictionary<string, PrefectureFolder>();
+
+            await foreach (var blobItem in containerClient.GetBlobsAsync(BlobTraits.Metadata))
+            {
+                if (blobItem.Metadata.TryGetValue("Prefecture", out var prefecture) &&
+                    blobItem.Metadata.TryGetValue("Municipality", out var municipality) &&
+                    blobItem.Metadata.TryGetValue("FiscalYear", out var year) &&
+                    blobItem.Metadata.TryGetValue("ConstructionType", out var constructionType))
+                {
+                    if (!tempStructure.ContainsKey(prefecture))
+                    {
+                        tempStructure[prefecture] = new PrefectureFolder();
+                    }
+
+                    if (!tempStructure[prefecture].Municipalities.ContainsKey(municipality))
+                    {
+                        tempStructure[prefecture].Municipalities[municipality] = new MunicipalityFolder();
+                    }
+
+                    if (!tempStructure[prefecture].Municipalities[municipality].Years.ContainsKey(year))
+                    {
+                        tempStructure[prefecture].Municipalities[municipality].Years[year] = new YearFolder();
+                    }
+
+                    if (!tempStructure[prefecture].Municipalities[municipality].Years[year].ConstructionTypes.ContainsKey(constructionType))
+                    {
+                        tempStructure[prefecture].Municipalities[municipality].Years[year].ConstructionTypes[constructionType] = new List<DocumentItem>();
+                    }
+
+                    tempStructure[prefecture].Municipalities[municipality].Years[year].ConstructionTypes[constructionType].Add(new DocumentItem
+                    {
+                        Name = blobItem.Name,
+                        Size = blobItem.Properties.ContentLength ?? 0,
+                        CreatedOn = blobItem.Properties.CreatedOn
+                    });
+                }
+            }
+
+            // ドキュメント数を集計
+            foreach (var prefecture in tempStructure)
+            {
+                foreach (var municipality in prefecture.Value.Municipalities)
+                {
+                    foreach (var year in municipality.Value.Years)
+                    {
+                        year.Value.TotalDocuments = year.Value.ConstructionTypes.Sum(ct => ct.Value.Count);
+                    }
+                    municipality.Value.TotalDocuments = municipality.Value.Years.Sum(y => y.Value.TotalDocuments);
+                }
+                prefecture.Value.TotalDocuments = prefecture.Value.Municipalities.Sum(m => m.Value.TotalDocuments);
+            }
+
+            folderStructure = tempStructure.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load folder structure");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void TogglePrefecture(string prefecture)
+    {
+        if (expandedPrefectures.Contains(prefecture))
+        {
+            expandedPrefectures.Remove(prefecture);
+        }
+        else
+        {
+            expandedPrefectures.Add(prefecture);
+        }
+    }
+
+    private void ToggleMunicipality(string prefecture, string municipality)
+    {
+        var key = $"{prefecture}/{municipality}";
+        if (expandedItems.Contains(key))
+        {
+            expandedItems.Remove(key);
+        }
+        else
+        {
+            expandedItems.Add(key);
+        }
+    }
+
+    private void ToggleYear(string prefecture, string municipality, string year)
+    {
+        var key = $"{prefecture}/{municipality}/{year}";
+        if (expandedItems.Contains(key))
+        {
+            expandedItems.Remove(key);
+        }
+        else
+        {
+            expandedItems.Add(key);
+        }
+    }
+
+    private void SelectFolder(string prefecture, string municipality, string year, string constructionType)
+    {
+        selectedPrefecture = prefecture;
+        selectedMunicipality = municipality;
+        selectedYear = year;
+        selectedConstructionType = constructionType;
+
+        if (folderStructure != null &&
+            folderStructure.TryGetValue(prefecture, out var prefFolder) &&
+            prefFolder.Municipalities.TryGetValue(municipality, out var munFolder) &&
+            munFolder.Years.TryGetValue(year, out var yearFolder) &&
+            yearFolder.ConstructionTypes.TryGetValue(constructionType, out var documents))
+        {
+            selectedDocuments = documents;
+        }
+    }
+
+    private bool IsExpanded(string prefecture, string? municipality = null, string? year = null)
+    {
+        if (municipality == null)
+        {
+            return expandedPrefectures.Contains(prefecture);
+        }
+        else if (year == null)
+        {
+            return expandedItems.Contains($"{prefecture}/{municipality}");
+        }
+        else
+        {
+            return expandedItems.Contains($"{prefecture}/{municipality}/{year}");
+        }
+    }
+
+    private bool IsSelected(string prefecture, string municipality, string year, string constructionType)
+    {
+        return selectedPrefecture == prefecture &&
+               selectedMunicipality == municipality &&
+               selectedYear == year &&
+               selectedConstructionType == constructionType;
+    }
+
+    private async Task ViewDocument(string fileName)
+    {
+        try
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            if (string.IsNullOrWhiteSpace(containerName))
+            {
+                Logger.LogError("AzureStorage:ContainerName is not configured.");
+                await JSRuntime.InvokeVoidAsync("alert", "Storage container is not configured.");
+                return;
+            }
+
+            var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+            var blobClient = containerClient.GetBlobClient(fileName);
+
+            if (await blobClient.ExistsAsync())
+            {
+                var sasBuilder = new BlobSasBuilder
+                {
+                    BlobContainerName = containerName,
+                    BlobName = fileName,
+                    Resource = "b",
+                    ExpiresOn = DateTimeOffset.UtcNow.AddMinutes(15)
+                };
+
+                sasBuilder.SetPermissions(BlobSasPermissions.Read);
+
+                Uri sasUri = blobClient.GenerateSasUri(sasBuilder);
+                Logger.LogInformation("Generated SAS URL for blob {BlobName} in container {ContainerName}.", fileName, containerName);
+                await JSRuntime.InvokeVoidAsync("open", sasUri.ToString(), "_blank");
+            }
+            else
+            {
+                Logger.LogWarning("Blob not found. Container={ContainerName}, BlobName={BlobName}", containerName, fileName);
+                await JSRuntime.InvokeVoidAsync("alert", $"File '{fileName}' not found in storage.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to generate SAS URL. BlobName={BlobName}", fileName);
+            await JSRuntime.InvokeVoidAsync("alert", $"Error generating file URL: {ex.Message}");
+        }
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+
+    // Data models
+    public class PrefectureFolder
+    {
+        public Dictionary<string, MunicipalityFolder> Municipalities { get; set; } = new();
+        public int TotalDocuments { get; set; }
+    }
+
+    public class MunicipalityFolder
+    {
+        public Dictionary<string, YearFolder> Years { get; set; } = new();
+        public int TotalDocuments { get; set; }
+    }
+
+    public class YearFolder
+    {
+        public Dictionary<string, List<DocumentItem>> ConstructionTypes { get; set; } = new();
+        public int TotalDocuments { get; set; }
+    }
+
+    public class DocumentItem
+    {
+        public string Name { get; set; } = string.Empty;
+        public long Size { get; set; }
+        public DateTimeOffset? CreatedOn { get; set; }
+    }
+}

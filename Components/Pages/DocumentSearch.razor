@@ -5,6 +5,7 @@
 @using System.Text.Json
 @using System.Text.Json.Serialization
 @using Azure.Storage.Blobs
+@using Azure.Storage.Blobs.Models
 @using Azure.Storage.Sas
 
 @inject IHttpClientFactory HttpClientFactory
@@ -35,6 +36,63 @@
     </button>
 </div>
 
+<div class="card mb-3">
+    <div class="card-header">
+        <button class="btn btn-link text-decoration-none w-100 text-start" @onclick="ToggleFilter">
+            <i class="bi @(showFilter ? "bi-chevron-up" : "bi-chevron-down")"></i>
+            フィルター
+        </button>
+    </div>
+    @if (showFilter)
+    {
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-3 mb-3">
+                    <label class="form-label">都道府県</label>
+                    <select @bind="filterPrefecture" @bind:after="OnFilterChanged" class="form-select">
+                        <option value="">全て</option>
+                        @foreach (var p in availablePrefectures)
+                        {
+                            <option value="@p">@p</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label">市区町村</label>
+                    <select @bind="filterMunicipality" @bind:after="OnFilterChanged" class="form-select">
+                        <option value="">全て</option>
+                        @foreach (var m in availableMunicipalities)
+                        {
+                            <option value="@m">@m</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label">年度</label>
+                    <select @bind="filterYear" @bind:after="OnFilterChanged" class="form-select">
+                        <option value="">全て</option>
+                        @foreach (var y in availableYears)
+                        {
+                            <option value="@y">@y</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label">工事分類</label>
+                    <select @bind="filterConstructionType" @bind:after="OnFilterChanged" class="form-select">
+                        <option value="">全て</option>
+                        @foreach (var ct in availableConstructionTypes)
+                        {
+                            <option value="@ct">@ct</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" @onclick="ClearFilters">フィルターをクリア</button>
+        </div>
+    }
+</div>
+
 @if (searchResults != null && searchResults.Any())
 {
     <h4>検索結果</h4>
@@ -47,9 +105,6 @@
                 </div>
                 <p class="mb-1">
                     最も関連性の高いページ <strong>@result.TopPageNumber</strong>.
-                </p>
-                <p class="mb-1">
-                    関連性のあるページ @string.Join(", ", result.PageNumbers)
                 </p>
             </div>
         }
@@ -73,6 +128,143 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
     private bool isLoading = false;
     private bool searchAttempted = false;
     private List<SearchResult>? searchResults;
+    private List<SearchResult>? allSearchResults;
+
+    // フィルター関連
+    private bool showFilter = false;
+    private string filterPrefecture = "";
+    private string filterMunicipality = "";
+    private string filterYear = "";
+    private string filterConstructionType = "";
+
+    private List<string> availablePrefectures = new();
+    private List<string> availableMunicipalities = new();
+    private List<string> availableYears = new();
+    private List<string> availableConstructionTypes = new();
+    private Dictionary<string, BlobMetadata> blobMetadataCache = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAvailableFilters();
+    }
+
+    private async Task LoadAvailableFilters()
+    {
+        try
+        {
+            var containerName = Configuration["AzureStorage:ContainerName"];
+            if (string.IsNullOrEmpty(containerName))
+            {
+                return;
+            }
+
+            var containerClient = BlobServiceClient.GetBlobContainerClient(containerName);
+
+            var prefectures = new HashSet<string>();
+            var municipalities = new HashSet<string>();
+            var years = new HashSet<string>();
+            var constructionTypes = new HashSet<string>();
+
+            await foreach (var blobItem in containerClient.GetBlobsAsync(BlobTraits.Metadata))
+            {
+                var metadata = new BlobMetadata();
+
+                if (blobItem.Metadata.TryGetValue("Prefecture", out var prefecture))
+                {
+                    prefectures.Add(prefecture);
+                    metadata.Prefecture = prefecture;
+                }
+
+                if (blobItem.Metadata.TryGetValue("Municipality", out var municipality))
+                {
+                    municipalities.Add(municipality);
+                    metadata.Municipality = municipality;
+                }
+
+                if (blobItem.Metadata.TryGetValue("FiscalYear", out var year))
+                {
+                    years.Add(year);
+                    metadata.Year = year;
+                }
+
+                if (blobItem.Metadata.TryGetValue("ConstructionType", out var constructionType))
+                {
+                    constructionTypes.Add(constructionType);
+                    metadata.ConstructionType = constructionType;
+                }
+
+                blobMetadataCache[blobItem.Name] = metadata;
+            }
+
+            availablePrefectures = prefectures.OrderBy(x => x).ToList();
+            availableMunicipalities = municipalities.OrderBy(x => x).ToList();
+            availableYears = years.OrderByDescending(x => x).ToList();
+            availableConstructionTypes = constructionTypes.OrderBy(x => x).ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load available filters");
+        }
+    }
+
+    private void ToggleFilter()
+    {
+        showFilter = !showFilter;
+    }
+
+    private void OnFilterChanged()
+    {
+        ApplyFilters();
+    }
+
+    private void ApplyFilters()
+    {
+        if (allSearchResults == null || !allSearchResults.Any())
+        {
+            return;
+        }
+
+        var filtered = allSearchResults.Where(r =>
+        {
+            if (!blobMetadataCache.TryGetValue(r.FileName, out var metadata))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(filterPrefecture) && metadata.Prefecture != filterPrefecture)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(filterMunicipality) && metadata.Municipality != filterMunicipality)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(filterYear) && metadata.Year != filterYear)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(filterConstructionType) && metadata.ConstructionType != filterConstructionType)
+            {
+                return false;
+            }
+
+            return true;
+        }).ToList();
+
+        searchResults = filtered;
+    }
+
+    private void ClearFilters()
+    {
+        filterPrefecture = "";
+        filterMunicipality = "";
+        filterYear = "";
+        filterConstructionType = "";
+        searchResults = allSearchResults;
+    }
 
     private async Task ViewDocument(string fileName)
     {
@@ -129,6 +321,7 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
         searchAttempted = true;
         searchedTerm = searchTerm;
         searchResults = null;
+        allSearchResults = null;
 
         var httpClient = HttpClientFactory.CreateClient("AzureSearchClient");
         Logger.LogInformation("Search requested. TermLength={TermLength}", searchTerm.Length);
@@ -170,7 +363,7 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
 
             var responseBody = await response.Content.ReadFromJsonAsync<SearchApiResponse>();
 
-            searchResults = responseBody?.Value?
+            allSearchResults = responseBody?.Value?
                 .GroupBy(r => r.FileName)
                 .Select(g =>
                 {
@@ -180,6 +373,9 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
                 })
                 .OrderByDescending(r => r.TopScore)
                 .ToList();
+
+            // フィルターを適用
+            ApplyFilters();
         }
         catch (Exception ex)
         {
@@ -222,5 +418,13 @@ else if (searchAttempted && (searchResults == null || !searchResults.Any()))
 
         [JsonPropertyName("pageNumber")]
         public int PageNumber { get; set; }
+    }
+
+    public class BlobMetadata
+    {
+        public string Prefecture { get; set; } = "";
+        public string Municipality { get; set; } = "";
+        public string Year { get; set; } = "";
+        public string ConstructionType { get; set; } = "";
     }
 }
